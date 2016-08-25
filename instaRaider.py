@@ -15,6 +15,8 @@ import re
 import email.utils as eut
 import requests
 import calendar
+import subprocess, uuid
+
 try:
     from requests.packages.urllib3.exceptions import InsecurePlatformWarning
 except ImportError:
@@ -26,6 +28,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions
 from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 import json
 from datetime import datetime
 from multiprocessing import Process
@@ -99,20 +102,38 @@ class InstaRaider(object):
         self.num_to_download = num_to_download
 
     def setup_logging(self, level=logging.INFO):
+        logging.basicConfig(level=level)
         self.logger = logging.getLogger('instaraider')
         self.logger.addHandler(logging.StreamHandler())
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(level)
 
     def log(self, *strings, **kwargs):
         level = kwargs.pop('level', logging.INFO)
         self.logger.log(level, u' '.join(str(s) for s in strings))
 
     def setup_webdriver(self):
-        self.profile = webdriver.FirefoxProfile()
-        self.profile.set_preference("general.useragent.override", self.user_agent)
-        self.webdriver = webdriver.Firefox(self.profile)
-        self.webdriver.set_window_size(480, 320)
-        self.webdriver.set_window_position(800, 0)
+        self.logger.debug("Starting webdriver - 0")
+
+        self.docker_name = "selenium-{}".format(uuid.uuid4())
+        #-v /dev/shm:/dev/shm selenium/standalone-chrome-debug:2.53.0
+        cmd = "docker run --rm --name '{docker_name}' -v /dev/shm:/dev/shm selenium/standalone-chrome-debug:2.53.0".format(
+            docker_name=self.docker_name
+        )
+        self.docker_process = subprocess.Popen(cmd, shell=True)
+        #sleep untill docker container downloaded, initalized, etc
+        for i in range(60*5):
+            time.sleep(1)
+            if self.docker_name in subprocess.check_output("docker ps", shell=True):
+                break
+        time.sleep(5) #make sure everything has time to start in container
+        #get container info
+        self.docker_ip = subprocess.check_output("docker inspect -f '{{ .NetworkSettings.IPAddress }}' " + self.docker_name, shell=True).strip()
+        self.logger.info("docker ip for %r = %r", self.docker_name, self.docker_ip)
+        self.driver = webdriver.Remote(command_executor='http://{}:4444/wd/hub'.format(self.docker_ip), desired_capabilities=DesiredCapabilities.CHROME)
+        self.driver.implicitly_wait(15) #error out any selenium command after 15 seconds
+        self.driver.set_page_load_timeout(30)
+
+        self.webdriver = self.driver
 
     def get_posts_count(self, url):
         """
